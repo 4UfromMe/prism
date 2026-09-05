@@ -5608,22 +5608,32 @@ msgctxt "#31081"
 msgid "When enabled, Prism syncs Kodi's native Mark as Watched menu on Prism lists to Simkl and refreshes the list."
 msgstr "When enabled, Prism syncs Kodi's native Mark as Watched menu on Prism lists to Simkl and refreshes the list."
 
+#: /resources/settings.xml
 msgctxt "#31082"
 msgid "Easynews"
 msgstr "Easynews"
 
+#: /resources/settings.xml
 msgctxt "#31083"
 msgid "Enable Easynews"
 msgstr "Enable Easynews"
 
+#: /resources/settings.xml
 msgctxt "#31084"
 msgid "Easynews Username"
 msgstr "Easynews Username"
 
+#: /resources/settings.xml
 msgctxt "#31085"
 msgid "Easynews Password"
 msgstr "Easynews Password"
 
+#: /resources/settings.xml
 msgctxt "#31087"
 msgid "Test Easynews Authentication"
 msgstr "Test Easynews Authentication"
+
+#: /resources/settings.xml
+msgctxt "#31088"
+msgid "EasyNews Premium Status"
+msgstr "EasyNews Premium Status"
