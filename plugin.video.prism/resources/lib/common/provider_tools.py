@@ -27,3 +27,14 @@ def set_setting(package_name, setting_id, value):
     :rtype: object
     """
     SettingsManager().set_setting(package_name, setting_id, value)
+
+def get_easynews_credentials():
+    """
+    Retrieves Easynews credentials from settings
+    :return: Tuple of (username, password) or (None, None)
+    :rtype: tuple
+    """
+    from resources.lib.modules.globals import g
+    username = g.get_setting("easynews.username") or ""
+    password = g.get_setting("easynews.password") or ""
+    return (username.strip(), password.strip()) if username and password else (None, None)
