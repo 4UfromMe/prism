@@ -175,6 +175,9 @@ class LocalFileScraper(CloudScraper):
 
     @staticmethod
     def _parse_episode_numbers(text):
+        """
+        Legacy parsing kept for compatibility. Prefer new token iterators in source_utils.
+        """
         match = _SEASON_EPISODE_RE.search(text)
         if match:
             return int(match.group(1)), int(match.group(2))
@@ -225,6 +228,21 @@ class LocalFileScraper(CloudScraper):
                 return parts[index - 1]
         return None
 
+    @staticmethod
+    def _get_folder_component(path):
+        """
+        Extract the immediate parent folder name from a path.
+        Example: /media/Shows/Show Name/Season 01/file.mkv -> returns 'Season 01'
+        If the path is just a file name or root, returns None.
+        """
+        if not path:
+            return None
+        parts = [p for p in path.replace('\\', '/').split('/') if p]
+        if len(parts) >= 2:
+            # parent folder is second-last element
+            return parts[-2]
+        return None
+
     def _target_episode_numbers(self):
         if not self.simple_info:
             return None
@@ -240,25 +258,83 @@ class LocalFileScraper(CloudScraper):
             return None
 
     def _matches_local_episode(self, item):
+        """
+        Three-pass episode matching:
+         1) Folder gate: if folder exists and does not match show title -> reject
+         2) Token matches: explicit S#E#, bare episode numbers, protected placement guard
+         3) Episode-title tokens override: if present, accept even if other checks failed
+        """
         target = self._target_episode_numbers()
         if not target:
             return False
+        req_season, req_episode = target
 
-        parsed = self._parse_episode_numbers(item.get('release_title', ''))
-        if not parsed:
-            parsed = self._parse_episode_numbers(item.get('path', ''))
-        if not parsed or parsed != target:
-            return False
+        # Pass 1: folder gate
+        folder_name = self._get_folder_component(item.get('path', ''))
+        if folder_name:
+            # Hard reject if folder name does not match the show's title/aliases
+            if not source_utils.folder_name_matches(folder_name, self.simple_info):
+                return False
 
-        return self._title_in_local_item(item, self._episode_title_candidates())
+        # Prepare normalized filename/path for token scanning
+        filename = item.get('release_title', '') or ''
+        path = item.get('path', '') or ''
+        combined = f"{path} {filename}"
+        cleaned = source_utils.clean_title(combined)
+
+        # Reject malformed EP declarations like EP15p unless episode-title override exists
+        if source_utils._malformed_ep_decl_re.search(cleaned):
+            ep_title = self._episode_title_candidates()
+            if not any(source_utils.episode_title_in_release(t, cleaned) for t in ep_title):
+                return False
+
+        # Pass 2: explicit S#E# tokens
+        # Check both filename and full path
+        for token_source in (filename, path, combined):
+            for s, e in source_utils.iter_season_episode_tokens(token_source):
+                if int(s) == req_season and int(e) == req_episode:
+                    # validate placement/prefix
+                    if source_utils.protected_placement_guard(token_source, self.simple_info):
+                        return True
+
+        # Pass 2b: bare episode numbers (fallback)
+        for token_source in (filename, path, combined):
+            for num in source_utils.iter_bare_episode_numbers(token_source):
+                if int(num) == req_episode:
+                    if source_utils.protected_placement_guard(token_source, self.simple_info):
+                        return True
+
+        # Pass 3: episode-title token override
+        for candidate in self._episode_title_candidates():
+            if source_utils.episode_title_in_release(candidate, cleaned):
+                return True
+
+        # Legacy fallback: basic parse of SxE or xXy in filename/path
+        parsed = self._parse_episode_numbers(filename) or self._parse_episode_numbers(path)
+        if parsed and parsed == (req_season, req_episode):
+            return True
+
+        return False
 
     def _matches_local_movie(self, item):
+        """
+        Movie matching with folder validation.
+        If an immediate parent folder exists and doesn't match the movie title, reject.
+        """
         if not self.simple_info:
             return False
 
         haystack = self._local_search_text(item)
         if 'sample' in haystack:
             return False
+
+        # Pass 1: folder validation
+        folder_name = self._get_folder_component(item.get('path', ''))
+        if folder_name:
+            # If folder exists and doesn't match movie title/aliases, hard reject
+            # (some users keep many movies in mixed folders; be conservative only when folder present)
+            if not source_utils.folder_name_matches(folder_name, self.simple_info):
+                return False
 
         titles = self._titles_from_simple_info(self.simple_info, 'title', alias_key='aliases')
         year = (self.simple_info.get('year') or '').strip()
@@ -277,6 +353,12 @@ class LocalFileScraper(CloudScraper):
 
         if self.media_type == g.MEDIA_EPISODE:
             for item in cloud_items:
+                # Pass 1: folder filtering before heavier checks
+                folder_name = self._get_folder_component(item.get('path', ''))
+                if folder_name and not source_utils.folder_name_matches(folder_name, self.simple_info):
+                    # Hard reject items in folders that don't match the show title
+                    continue
+
                 search_text = self._local_search_text(item)
                 if (
                     self.episode_regex(search_text)
