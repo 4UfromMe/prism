@@ -1060,5 +1060,10 @@ def dispatch(params):
             window.doModal()
         finally:
             del window
+    
+    elif action == "testEasynewsAuth":
+        from resources.lib.debrid.easynews import EasyNews
+        EasyNews().test_auth()
+
     else:
         g.log(f"Unknown action requested: {action}", "error")
