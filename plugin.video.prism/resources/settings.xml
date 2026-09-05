@@ -1769,7 +1769,6 @@
 			<group id="9" label="31082">
 				<setting id="easynews.enabled" type="boolean" label="31083" help="">
 					<level>0</level>
-					<default>false</default>
 					<control type="toggle"/>
 				</setting>
 				<setting id="easynews.username" type="string" label="31084" help="">
