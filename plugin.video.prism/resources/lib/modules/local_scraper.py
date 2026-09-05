@@ -7,8 +7,8 @@ from resources.lib.common import tools
 from resources.lib.modules.cloud_scrapers import CloudScraper
 from resources.lib.modules.globals import g
 
-_SEASON_EPISODE_RE = re.compile(r'(?i)s(\d{1,2})e(\d{1,2})')
-_SEASON_EPISODE_X_RE = re.compile(r'(?i)(?:^|[.\s_-])(\d{1,2})x(\d{1,2})(?:[.\s_-]|$)')
+_SEASON_EPISODE_RE = re.compile(r'(?i)s(\d{1,2})e(\d{1,4})')
+_SEASON_EPISODE_X_RE = re.compile(r'(?i)(?:^|[.\s_-])(\d{1,2})x(\d{1,4})(?:[.\s_-]|$)')
 _SEASON_FOLDER_RE = re.compile(r'(?i)^season\s*0*(\d+)$')
 _TITLE_TOKEN_RE = re.compile(r'[a-z0-9]+')
 
