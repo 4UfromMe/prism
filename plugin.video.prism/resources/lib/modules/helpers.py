@@ -9,7 +9,7 @@ from resources.lib.modules.getSources import Sources
 from resources.lib.modules.globals import g
 from resources.lib.modules.resolver import Resolver
 from resources.lib.modules.source_sorter import SourceSorter
-
+from resources.lib.common import source_utils
 
 def _valid_stream_link(stream_link) -> bool:
     return bool(stream_link) and stream_link != "none"
@@ -116,7 +116,71 @@ class SourcesHelper:
                 if not yesno:
                     g.cancel_playback()
                     return None
-        return Sources(item_information).get_sources(overwrite_torrent_cache=overwrite_cache)
+
+        # Run the normal scraping flow
+        uncached, sources_list, item_information = Sources(item_information).get_sources(overwrite_torrent_cache=overwrite_cache)
+
+        # If this is an episode, apply early folder gate and compute match scores for ranking
+        try:
+            if item_information and item_information.get("info", {}).get("mediatype") == g.MEDIA_EPISODE:
+                simple_info = self._build_simple_show_info(item_information)
+
+                filtered_sources = []
+                for src in sources_list:
+                    # Safety: accept non-dict items
+                    if not isinstance(src, dict):
+                        filtered_sources.append(src)
+                        continue
+
+                    # Build candidate string for matching
+                    candidate = ' '.join(str(src.get(k) or '') for k in ('path', 'release_title', 'name', 'short_name') if src.get(k))
+                    candidate_clean = source_utils.clean_title(candidate)
+
+                    # Folder gate: if folder exists and does not match, reject unless episode-title override
+                    folder = None
+                    try:
+                        path = src.get('path') or src.get('url') or src.get('name') or ''
+                        if path:
+                            parts = [p for p in str(path).replace('\\', '/').split('/') if p]
+                            if len(parts) >= 2:
+                                folder = parts[-2]
+                    except Exception:
+                        folder = None
+
+                    folder_ok = True
+                    if folder:
+                        folder_ok = source_utils.folder_name_matches(folder, simple_info)
+                        # If folder doesn't match but episode-title tokens present in file, allow (override)
+                        if not folder_ok:
+                            ep_title = simple_info.get('episode_title')
+                            if ep_title and source_utils.episode_title_in_release(ep_title, candidate_clean):
+                                folder_ok = True
+
+                    if not folder_ok:
+                        # reject item
+                        continue
+
+                    # Malformed EP declarations: reject unless episode-title override
+                    if source_utils._malformed_ep_decl_re.search(candidate_clean):
+                        ep_title = simple_info.get('episode_title')
+                        if not (ep_title and source_utils.episode_title_in_release(ep_title, candidate_clean)):
+                            continue
+
+                    # Attach a match_score for later ranking
+                    try:
+                        score = self._score_episode_match(candidate, simple_info)
+                    except Exception:
+                        score = 0
+                    src['match_score'] = score
+
+                    filtered_sources.append(src)
+
+                sources_list = filtered_sources
+        except Exception:
+            # Be permissive on unexpected shapes
+            pass
+
+        return uncached, sources_list, item_information
 
     def sort_sources(
         self,
@@ -145,6 +209,18 @@ class SourcesHelper:
             g.notification(g.ADDON_NAME, g.get_language_string(30032), time=5000)
             return
 
+        # Apply match_score-based stable ordering on top of the sorter results (episode-specific)
+        try:
+            if item_information and item_information.get("info", {}).get("mediatype") == g.MEDIA_EPISODE:
+                # Ensure every source has match_score (default 0)
+                for s in sources:
+                    if isinstance(s, dict):
+                        s.setdefault('match_score', 0)
+                # Stable sort: higher match_score first, keep previous order for ties
+                sources = sorted(sources, key=lambda x: x.get('match_score', 0), reverse=True)
+        except Exception:
+            pass
+
         if (
             smart_play_context
             and not source_select
@@ -162,6 +238,99 @@ class SourcesHelper:
                 sources = sorter.apply_last_release_name_fallback(sources)
 
         return sources
+
+    # -------------------------
+    # Helpers for scoring and simple_info
+    # -------------------------
+    @staticmethod
+    def _build_simple_show_info(item_information):
+        """Construct a simplified simple_info dict used by source_utils helpers."""
+        info = (item_information or {}).get("info") or {}
+        show_title = info.get('tvshowtitle') or info.get('title') or ''
+        ep_title = info.get('originaltitle') or info.get('title') or ''
+        season = info.get('season') or info.get('season_number') or ''
+        episode = info.get('episode') or info.get('episode_number') or ''
+        simple_info = {
+            'show_title': show_title,
+            'episode_title': ep_title,
+            'year': str(info.get('tvshow.year', info.get('year', ''))),
+            'season_number': str(season if season is not None else ''),
+            'episode_number': str(episode if episode is not None else ''),
+            'show_aliases': list(info.get('aliases', [])),
+            'country': info.get('country_origin', '') or info.get('country'),
+            'no_seasons': str(item_information.get('season_count', '')),
+            'absolute_number': str(item_information.get('absoluteNumber') or item_information.get('absolute_number') or ''),
+            'is_airing': item_information.get('is_airing', False),
+            'no_episodes': str(item_information.get('episode_count', '')),
+            'isanime': False,
+        }
+        return simple_info
+
+    @staticmethod
+    def _score_episode_match(candidate: str, simple_info: dict) -> int:
+        """
+        Rate files by:
+          - Episode-title token match (highest, overrides S#E#): 100
+          - Exact S#E# token match + protected placement: 90
+          - Protected placement guard pass (medium): 60
+          - Bare episode match + protected placement: 50
+          - Malformed declaration penalty: -50
+          - Default: 0
+        """
+        if not candidate:
+            return 0
+        r = source_utils.clean_title(candidate)
+
+        # Episode-title tokens override highest
+        ep_title = simple_info.get('episode_title')
+        if ep_title and source_utils.episode_title_in_release(ep_title, r):
+            return 100
+
+        # Malformed declaration => heavy penalty unless episode-title override (already handled)
+        if source_utils._malformed_ep_decl_re.search(r):
+            return -50
+
+        # Explicit S#E# tokens
+        for s, e in source_utils.iter_season_episode_tokens(r):
+            try:
+                s_i, e_i = int(s), int(e)
+            except Exception:
+                continue
+            req_s = simple_info.get('season_number') or simple_info.get('season')
+            req_e = simple_info.get('episode_number') or simple_info.get('episode')
+            try:
+                req_s_i = int(str(req_s)) if req_s not in (None, '') else None
+                req_e_i = int(str(req_e)) if req_e not in (None, '') else None
+            except Exception:
+                req_s_i = req_e_i = None
+
+            if req_s_i is not None and req_e_i is not None:
+                if s_i == req_s_i and e_i == req_e_i and source_utils.protected_placement_guard(r, simple_info):
+                    return 90
+            else:
+                # No requested season/episode available; presence of SE token with title prefix is decent
+                if source_utils.protected_placement_guard(r, simple_info):
+                    return 60
+
+        # Bare episode fallback
+        for n in source_utils.iter_bare_episode_numbers(r):
+            try:
+                n_i = int(n)
+            except Exception:
+                continue
+            req_e = simple_info.get('episode_number') or simple_info.get('episode')
+            try:
+                req_e_i = int(str(req_e)) if req_e not in (None, '') else None
+            except Exception:
+                req_e_i = None
+            if req_e_i is not None and n_i == req_e_i and source_utils.protected_placement_guard(r, simple_info):
+                return 50
+
+        # Protected placement guard (title before token) gives modest score
+        if source_utils.protected_placement_guard(r, simple_info):
+            return 40
+
+        return 0
 
 
 def show_persistent_window_if_required(item_information):
