@@ -12,7 +12,7 @@ class EasyNews:
     """EasyNews premium service integration."""
     
     def __init__(self):
-        self.base_url = "https://api.easynews.com"
+        self.base_url = "https://members.easynews.com/login"
         self.timeout = 10
         self._load_settings()
     
