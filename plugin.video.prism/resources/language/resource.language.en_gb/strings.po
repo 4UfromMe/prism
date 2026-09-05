@@ -5607,3 +5607,19 @@ msgstr "Sync Kodi Mark as Watched"
 msgctxt "#31081"
 msgid "When enabled, Prism syncs Kodi's native Mark as Watched menu on Prism lists to Simkl and refreshes the list."
 msgstr "When enabled, Prism syncs Kodi's native Mark as Watched menu on Prism lists to Simkl and refreshes the list."
+
+msgctxt "#30947"
+msgid "Easynews Password (masked in display)"
+msgstr "Easynews Password"
+
+msgctxt "#30949"
+msgid "Easynews Password"
+msgstr "Easynews Password"
+
+msgctxt "#30950"
+msgid "Easynews Username"
+msgstr "Easynews Username"
+
+msgctxt "#30951"
+msgid "Enter your Easynews username for authentication"
+msgstr "Enter your Easynews username for authentication"
