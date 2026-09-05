@@ -1,10 +1,12 @@
 import os
 import re
 from urllib import parse
+from typing import Dict, List, Optional, Tuple
 
 import xbmcvfs
 
 from resources.lib.common import tools
+from resources.lib.common import source_utils
 from resources.lib.modules.globals import g
 
 _INVALID_PATH_CHARS = re.compile(r'[<>:"/\\|?*]')
@@ -70,12 +72,25 @@ def resolve_library_root(item_information):
     return ''
 
 
-def parse_season_from_name(name):
+def parse_season_from_name(name: Optional[str]) -> Optional[int]:
+    """
+    Enhanced season parse: prefer comprehensive token scanning from source_utils.
+    """
     if not name:
         return None
+    # First try to find explicit season/episode tokens via source_utils
+    for s, _ in source_utils.iter_season_episode_tokens(name):
+        try:
+            return int(s)
+        except (TypeError, ValueError):
+            continue
+    # Fallback to legacy regex
     match = _SEASON_EPISODE_RE.search(str(name))
     if match:
-        return int(match.group(1))
+        try:
+            return int(match.group(1))
+        except (TypeError, ValueError):
+            return None
     return None
 
 
@@ -84,6 +99,7 @@ def resolve_season_folder(item_information, filename=None, inner_path=None):
         return ''
     season = None
     if g.get_int_setting('download.organize.multiselect') == 1:
+        # inner_path may be a folder path or filename; parse season tokens from it
         season = parse_season_from_name(inner_path or filename)
     if season is None:
         season_raw = _item_info(item_information).get('season')
@@ -108,7 +124,19 @@ def build_download_subdir(item_information, filename, inner_path=None):
 
     if mediatype == g.MEDIA_EPISODE:
         parts.append(resolve_show_title(item_information))
-        season_folder = resolve_season_folder(item_information, filename, inner_path)
+
+        # Try token-based detection first if multiselect is enabled and inner_path provided
+        season_folder = ''
+        if g.get_int_setting('download.organize.multiselect') == 1:
+            # Prefer parsing inner_path first (may be folder), fallback to filename
+            season = parse_season_from_name(inner_path or filename)
+            if season is not None:
+                season_folder = f'Season {int(season):02d}'
+
+        # Fallback to legacy resolve_season_folder logic
+        if not season_folder:
+            season_folder = resolve_season_folder(item_information, filename, inner_path)
+
         if season_folder:
             parts.append(season_folder)
     elif mediatype == g.MEDIA_MOVIE:
@@ -218,3 +246,143 @@ def _cleanup_empty_dirs(start_dir, stop_at):
         except (OSError, ValueError):
             break
         current = os.path.dirname(current)
+
+
+# ---------------------------------------------------------------------
+# New helpers: extract tokens from path, validate folder against show,
+# and confirm episode presence before organizing/moving
+# ---------------------------------------------------------------------
+def _immediate_parent_folder(path: str) -> Optional[str]:
+    if not path:
+        return None
+    parts = [p for p in path.replace('\\', '/').split('/') if p]
+    if len(parts) >= 2:
+        return parts[-2]
+    return None
+
+
+def extract_episode_tokens_from_path(path: str) -> Dict[str, List[Tuple[int, int]]]:
+    """
+    Parse season/episode tokens and bare episodes from a filename or inner path.
+    Returns a dict with keys:
+      - 'se_tokens': list of (season, episode) tuples
+      - 'bare_episodes': list of bare episode ints
+    """
+    se_tokens: List[Tuple[int, int]] = []
+    bare: List[int] = []
+    if not path:
+        return {'se_tokens': se_tokens, 'bare_episodes': bare}
+
+    for s, e in source_utils.iter_season_episode_tokens(path):
+        try:
+            se_tokens.append((int(s), int(e)))
+        except (TypeError, ValueError):
+            continue
+
+    for n in source_utils.iter_bare_episode_numbers(path):
+        try:
+            bare.append(int(n))
+        except (TypeError, ValueError):
+            continue
+
+    return {'se_tokens': se_tokens, 'bare_episodes': bare}
+
+
+def validate_episode_in_folder(item_information: dict, path: str, filename: Optional[str] = None) -> bool:
+    """
+    Confirm file/inner_path matches requested episode before organizing/moving.
+    Rules:
+      - If an immediate parent folder exists, it must match the show's title (folder gate).
+      - Episode-title tokens (from metadata) override other mismatches.
+      - Explicit S#E# token matches or bare episode matches (with protected placement) are accepted.
+      - Malformed declarations (EP15p) reject unless episode-title tokens override.
+    """
+    info = _item_info(item_information)
+    if not info:
+        return False
+
+    simple_info = {
+        'show_title': info.get('tvshowtitle') or info.get('title'),
+        'show_aliases': info.get('aliases') or [],
+        'season_number': info.get('season') or info.get('season_number'),
+        'episode_number': info.get('episode') or info.get('episode_number'),
+        'absolute_number': info.get('absolute_number'),
+        'episode_title': info.get('title') or info.get('episode_title'),
+        'country': info.get('country'),
+        'year': info.get('year'),
+    }
+
+    # Folder gate
+    folder_name = _immediate_parent_folder(path or '')
+    if folder_name:
+        if not source_utils.folder_name_matches(folder_name, simple_info):
+            return False
+
+    combined = f"{path or ''} {filename or ''}"
+    cleaned = source_utils.clean_title(combined)
+
+    # Malformed EP declarations?
+    if source_utils._malformed_ep_decl_re.search(cleaned):
+        # episode-title override?
+        ep_title = simple_info.get('episode_title')
+        if not (ep_title and source_utils.episode_title_in_release(ep_title, cleaned)):
+            return False
+
+    # Episode-title override: if tokens present, accept
+    ep_title = simple_info.get('episode_title')
+    if ep_title and source_utils.episode_title_in_release(ep_title, cleaned):
+        return True
+
+    # Try explicit S#E# tokens
+    tokens = extract_episode_tokens_from_path(combined)
+    se_tokens = tokens.get('se_tokens', []) or []
+    target_se = None
+    try:
+        if simple_info.get('season_number') not in (None, '') and simple_info.get('episode_number') not in (None, ''):
+            target_se = (int(simple_info['season_number']), int(simple_info['episode_number']))
+    except (TypeError, ValueError):
+        target_se = None
+
+    if target_se:
+        for s, e in se_tokens:
+            if s == target_se[0] and e == target_se[1]:
+                if source_utils.protected_placement_guard(cleaned, simple_info):
+                    return True
+
+    # Bare episode fallback
+    target_ep = None
+    try:
+        if simple_info.get('episode_number') not in (None, ''):
+            target_ep = int(simple_info['episode_number'])
+    except (TypeError, ValueError):
+        target_ep = None
+
+    if target_ep:
+        for n in tokens.get('bare_episodes', []):
+            if n == target_ep and source_utils.protected_placement_guard(cleaned, simple_info):
+                return True
+
+    # Absolute number fallback
+    abs_num = simple_info.get('absolute_number')
+    if abs_num not in (None, ''):
+        try:
+            abs_req = int(str(abs_num))
+            # look for padded/variants in cleaned string
+            padded = str(abs_req).zfill(3)
+            haystack = f" {cleaned} "
+            for needle in (
+                f" {padded} ",
+                f" {abs_req} ",
+                f"-{padded}-",
+                f"-{abs_req}-",
+                f" e{abs_req} ",
+                f" ep{abs_req} ",
+                f" episode {abs_req} ",
+            ):
+                if needle in haystack and source_utils.protected_placement_guard(cleaned, simple_info):
+                    return True
+        except (TypeError, ValueError):
+            pass
+
+    # If nothing matched, do not validate (reject)
+    return False
