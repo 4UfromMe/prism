@@ -368,28 +368,6 @@
 						<heading/>
 					</control>
 				</setting>
-				<!-- Easynews Settings -->
-				<setting id="easynews.username" type="string" label="30950" help="30951">
-				    <level>0</level>
-				    <default/>
-				    <constraints>
-				        <allowempty>true</allowempty>
-				    </constraints>
-				    <control type="edit" format="string">
-				        <heading/>
-				    </control>
-				</setting>
-				<setting id="easynews.password" type="string" label="30949" help="30947">
-				    <level>0</level>
-				    <default/>
-				    <constraints>
-				        <allowempty>true</allowempty>
-				    </constraints>
-				    <control type="edit" format="string">
-				        <heading/>
-				        <obscure>true</obscure>
-				    </control>
-				</setting>
 				<setting id="update.news.version" type="string" help="">
 					<level>4</level>
 					<default/>
