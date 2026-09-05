@@ -18,6 +18,7 @@ from resources.lib.modules.globals import g
 from resources.lib.modules.providers import CustomProviders
 from resources.lib.modules.providers.service_manager import ProvidersServiceManager
 from resources.lib.modules.providers.settings import SettingsManager
+from resources.lib.modules.providers.easynews_settings import EASYNEWS_SETTINGS
 from resources.lib.modules.zip_manager import ZipManager
 
 TEMP_FORMAT = "{}.temp"
@@ -182,6 +183,27 @@ class ProviderInstallManager(CustomProviders, ZipManager):
             except Exception as e:
                 raise FileIOError(f"{e} Failed to extract to folder - {folder}") from e
 
+    def _register_package_settings(self, package_name):
+        """
+        Register package-specific settings based on package name.
+        
+        This method handles provider packages that have predefined settings.
+        Currently supports Easynews, but can be extended for other providers.
+        
+        Args:
+            package_name (str): Name of the provider package being installed
+        """
+        manager = SettingsManager()
+        
+        # Easynews settings registration
+        if package_name.lower() == "easynews":
+            try:
+                manager.create_settings("easynews", EASYNEWS_SETTINGS)
+                g.log(f"✅ Registered {len(EASYNEWS_SETTINGS)} Easynews settings (username, password, API key, SSL, timeout, max results)", "info")
+            except Exception as e:
+                g.log(f"⚠️ Failed to register Easynews settings: {str(e)[:120]}", "warning")
+                g.log_stacktrace()
+
     def _install_zip(self):
         install_progress = None
         # self._remove_root_directory_from_file_paths()
@@ -220,7 +242,12 @@ class ProviderInstallManager(CustomProviders, ZipManager):
         if install_progress:
             install_progress.close()
 
+        # Register settings from provider package meta.json
         SettingsManager().create_settings(meta["name"], meta.get("settings", []))
+        
+        # Register package-specific predefined settings (e.g., Easynews credentials)
+        self._register_package_settings(pack_name)
+        
         g.log("Refreshing provider database ")
         self.add_provider_package(pack_name, author, remote_meta, version, services)
         self._do_package_pre_config(meta["name"], meta.get("setup_extension"))
