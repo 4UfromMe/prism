@@ -1,3 +1,4 @@
+import xbmc
 import xbmcgui
 
 from resources.lib.database.providerCache import ProviderCache
@@ -138,7 +139,7 @@ class PackageConfiguration(BaseWindow):
         provider_item.setProperty("status", new_status)
         self.providers = self.providerCache.get_providers()
 
-    def flip_mutliple_providers(self, status, provider_type=None):
+    def flip_multiple_providers(self, status, provider_type=None):
         g.show_busy_dialog()
         providers = [i for i in self.providers if i["package"] == self.package_name]
 
@@ -181,7 +182,7 @@ class PackageConfiguration(BaseWindow):
                 }
 
                 option = options.get(control_id)
-                self.flip_mutliple_providers(option[0], provider_type=option[1])
+                self.flip_multiple_providers(option[0], provider_type=option[1])
 
     def _edit_setting(self, setting):
         value = None
@@ -192,11 +193,24 @@ class PackageConfiguration(BaseWindow):
         elif setting["type"] == "bool":
             value = setting["value"] != "True"
         elif setting["type"] in ["str", "int"]:
-            value = xbmcgui.Dialog().input(
-                setting.get("label", ""),
-                setting.get("value", ""),
-                xbmcgui.INPUT_NUMERIC if setting["type"] == "int" else xbmcgui.INPUT_ALPHANUM,
-            )
+            # Use hidden keyboard for sensitive inputs (passwords)
+            if setting["definition"].get("sensitive"):
+                kb = xbmc.Keyboard(setting.get("value", ""), setting.get("label", ""))
+                # setHiddenInput is supported on some xbmc versions; use to hide input while typing
+                try:
+                    kb.setHiddenInput(True)
+                except Exception:
+                    # older/newer versions may accept hidden as constructor param; ignore if not available
+                    pass
+                kb.doModal()
+                if kb.isConfirmed():
+                    value = kb.getText()
+            else:
+                value = xbmcgui.Dialog().input(
+                    setting.get("label", ""),
+                    setting.get("value", ""),
+                    xbmcgui.INPUT_NUMERIC if setting["type"] == "int" else xbmcgui.INPUT_ALPHANUM,
+                )
 
         if value is not None:
             try:
