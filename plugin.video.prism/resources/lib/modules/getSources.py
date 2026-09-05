@@ -36,6 +36,7 @@ from resources.lib.modules.cloud_scrapers import AllDebridCloudScraper
 from resources.lib.modules.cloud_scrapers import PremiumizeCloudScraper
 from resources.lib.modules.cloud_scrapers import RealDebridCloudScraper
 from resources.lib.modules.cloud_scrapers import OffCloudCloudScraper
+from resources.lib.modules.modules import ThreadPool as TP  # kept for potential compatibility
 from resources.lib.modules.cloud_scrapers import TorBoxCloudScraper
 from resources.lib.modules.local_scraper import LocalFileScraper
 from resources.lib.modules.local_scraper import local_scraping_enabled
@@ -573,6 +574,21 @@ class Sources:
                 simple_info = self._build_simple_show_info(info)
 
                 results = provider_source.episode(simple_info, info)
+                # Provider-level filtering for episode items (folder gate, malformed detection, token checks)
+                try:
+                    if isinstance(results, list):
+                        filtered = []
+                        for r in results:
+                            try:
+                                if self._provider_episode_accept(r, simple_info):
+                                    filtered.append(r)
+                                else:
+                                    g.log(f"{provider_name}: filtered out cloud/provider item by folder/token/malformed gate", "debug")
+                            except Exception:
+                                filtered.append(r)  # be permissive on unexpected shapes
+                        results = filtered
+                except Exception:
+                    pass
             else:
                 simple_info = self._build_simple_movie_info(info)
 
@@ -808,7 +824,35 @@ class Sources:
                     )
 
             sources = thread_pool.wait_completion()
-            self.sources_information['cloudFiles'] = sources or []
+            # Normalize and flatten results
+            normalized = []
+            if not sources:
+                normalized = []
+            else:
+                for s in sources:
+                    if isinstance(s, list):
+                        normalized.extend(s)
+                    else:
+                        normalized.append(s)
+
+            # Filter cloud results using new folder/token/malformed rules
+            try:
+                filtered = []
+                for item in normalized:
+                    try:
+                        if self.media_type == g.MEDIA_EPISODE:
+                            if self._filter_cloud_item(item, simple_info):
+                                filtered.append(item)
+                            else:
+                                g.log("Cloud Inspection: filtered out item by folder/token/malformed gate", "debug")
+                        else:
+                            filtered.append(item)
+                    except Exception:
+                        # Be permissive on unexpected shapes
+                        filtered.append(item)
+                self.sources_information['cloudFiles'] = filtered
+            except Exception:
+                self.sources_information['cloudFiles'] = normalized or []
 
         finally:
             self.sources_information['statistics']['remainingProviders'].remove("Cloud Inspection")
@@ -830,6 +874,175 @@ class Sources:
         finally:
             with contextlib.suppress(ValueError):
                 self.sources_information['statistics']['remainingProviders'].remove("Local Inspection")
+
+    # -------------------------
+    # New helper methods
+    # -------------------------
+    def _extract_cloud_folder_structure(self, item):
+        """
+        Extract immediate parent folder name from cloud item.
+        Accepts items with 'path' or 'name' keys. Returns None if not available.
+        """
+        try:
+            path = item.get('path') or item.get('name') or ''
+        except Exception:
+            return None
+        if not path:
+            return None
+        parts = [p for p in str(path).replace('\\', '/').split('/') if p]
+        if len(parts) >= 2:
+            return parts[-2]
+        return None
+
+    def _filter_by_folder_name(self, item, simple_info):
+        """
+        Folder gate: if immediate parent folder exists, it must match the show's title/aliases.
+        If no folder info exists, this gate passes.
+        """
+        folder_name = self._extract_cloud_folder_structure(item)
+        if not folder_name:
+            return True
+        try:
+            return source_utils.folder_name_matches(folder_name, simple_info)
+        except Exception:
+            return True
+
+    def _filter_malformed_episodes(self, item, simple_info):
+        """
+        Reject items with malformed EP declarations like 'EP15p' unless episode-title tokens override.
+        """
+        try:
+            hay = source_utils.clean_title(str(item.get('release_title') or item.get('name') or item.get('path') or ''))
+        except Exception:
+            return True
+        if source_utils._malformed_ep_decl_re.search(hay):
+            ep_title = simple_info.get('episode_title')
+            if not (ep_title and source_utils.episode_title_in_release(ep_title, hay)):
+                return False
+        return True
+
+    def _provider_episode_accept(self, item, simple_info):
+        """
+        Provider-level acceptance for episode items.
+        Applies folder gate, malformed detection, and token/regex matching (including protected placement).
+        """
+        # Folder gate first
+        if not self._filter_by_folder_name(item, simple_info):
+            return False
+
+        # Malformed declarations
+        if not self._filter_malformed_episodes(item, simple_info):
+            return False
+
+        # Build a candidate release_title string
+        candidate = ''
+        try:
+            # Some providers use different keys
+            candidate = ' '.join(
+                str(item.get(k) or '') for k in ('path', 'release_title', 'name', 'short_name') if item.get(k)
+            )
+        except Exception:
+            candidate = str(item)
+
+        # Legacy regex checks (episode_regex/season_regex are callables bound by scrapers)
+        try:
+            if self.media_type == g.MEDIA_EPISODE:
+                # attempt regex-based match if possible
+                if callable(getattr(self, 'episode_regex', None)) and self.episode_regex(source_utils.clean_title(candidate)):
+                    if source_utils.protected_placement_guard(candidate, simple_info):
+                        return True
+                if callable(getattr(self, 'season_regex', None)) and self.season_regex(source_utils.clean_title(candidate)):
+                    if source_utils.protected_placement_guard(candidate, simple_info):
+                        return True
+        except Exception:
+            pass
+
+        # Token/SE matching with protected placement
+        try:
+            if source_utils.cloud_episode_matches(candidate, simple_info):
+                return True
+        except Exception:
+            pass
+
+        # Episode-title override
+        try:
+            ep_title = simple_info.get('episode_title')
+            if ep_title and source_utils.episode_title_in_release(ep_title, candidate):
+                return True
+        except Exception:
+            pass
+
+        # Loose fallback (old behaviour)
+        try:
+            if source_utils.cloud_loose_episode_match(candidate, simple_info):
+                return True
+        except Exception:
+            pass
+
+        return False
+
+    def _filter_cloud_item(self, item, simple_info):
+        """
+        High-level cloud item filter used after cloud inspection gathers raw items.
+        Returns True to keep item.
+        """
+        # If item is clearly a folder or listing without file, keep conservative
+        try:
+            # Folder gate
+            if not self._filter_by_folder_name(item, simple_info):
+                return False
+
+            # Malformed ep detection
+            if not self._filter_malformed_episodes(item, simple_info):
+                return False
+
+            # Token/SE/Title matching
+            candidate = ' '.join(
+                str(item.get(k) or '') for k in ('path', 'release_title', 'name', 'short_name') if item.get(k)
+            )
+
+            # If the item clearly matches the episode via robust matching, accept
+            if source_utils.cloud_episode_matches(candidate, simple_info):
+                return True
+
+            # Episode title override
+            ep_title = simple_info.get('episode_title')
+            if ep_title and source_utils.episode_title_in_release(ep_title, candidate):
+                return True
+
+            # Legacy anchored regex checks (if available)
+            try:
+                if callable(getattr(self, 'episode_regex', None)) and self.episode_regex(source_utils.clean_title(candidate)):
+                    if source_utils.protected_placement_guard(candidate, simple_info):
+                        return True
+                if callable(getattr(self, 'season_regex', None)) and self.season_regex(source_utils.clean_title(candidate)):
+                    if source_utils.protected_placement_guard(candidate, simple_info):
+                        return True
+            except Exception:
+                pass
+
+            # Bare episode fallback
+            for n in source_utils.iter_bare_episode_numbers(candidate):
+                try:
+                    req_ep = int(simple_info.get('episode_number') or simple_info.get('episode') or -1)
+                except Exception:
+                    req_ep = -1
+                if req_ep != -1 and int(n) == int(req_ep) and source_utils.protected_placement_guard(candidate, simple_info):
+                    return True
+
+            # Loose fallback
+            if source_utils.cloud_loose_episode_match(candidate, simple_info):
+                return True
+
+        except Exception:
+            # In case of unexpected shapes, be permissive
+            return True
+
+        return False
+
+    # -------------------------
+    # End new helpers
+    # -------------------------
 
     @staticmethod
     def _color_number(number):
