@@ -1809,6 +1809,14 @@
 						<hidden>true</hidden>
 					</control>
 				</setting>
+				<setting id="easynews.testAuth" type="action" label="31087" help="">
+					<level>0</level>
+					<data>RunPlugin(plugin://plugin.video.prism/?action=testEasynewsAuth)</data>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<control type="button" format="action"/>
+				</setting>
 				<setting id="easynews.premiumstatus" type="string" label="30458" help="" parent="easynews.username">
 					<level>0</level>
 					<default/>
