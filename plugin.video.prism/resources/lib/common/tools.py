@@ -14,8 +14,9 @@ from urllib import parse
 import xbmc
 import xbmcvfs
 
-youtube_url = "plugin://plugin.video.youtube/play/?video_id={}"
+from resources.lib.common import source_utils
 
+youtube_url = "plugin://plugin.video.youtube/play/?video_id={}"
 DIGIT_REGEX = re.compile(r"\d")
 SORT_TOKENS = [
     "a ",
@@ -975,3 +976,54 @@ class FixedSortPositionObject:
 
     def __neg__(self):
         return self
+
+
+# -----------------------------------------------------------------------------
+# New helpers for filename/folder normalization and token extraction
+# -----------------------------------------------------------------------------
+def folder_title_queries(simple_info: dict) -> list:
+    """
+    Wrapper to generate cleaned title + aliases to be used for folder matching.
+    Delegates to source_utils to ensure a single canonical implementation.
+    """
+    if not isinstance(simple_info, dict):
+        return []
+    return source_utils.folder_title_queries(simple_info)
+
+
+def normalize_filename(filename: str) -> str:
+    """
+    Standardize filename cleaning (accent-fold, remove non-ASCII, lowercase, strip separators).
+    Uses source_utils.clean_title under the hood for consistent normalization.
+    """
+    if filename is None:
+        return ""
+    # Keep consistent with the main normalization used across the codebase
+    return source_utils.clean_title(str(filename))
+
+
+def split_filename_tokens(filename: str) -> list:
+    """
+    Tokenize a filename/path into normalized tokens suitable for matching and scoring.
+    Delegates to source_utils._filename_tokens for consistent behaviour.
+    """
+    return source_utils._filename_tokens(filename or "")
+
+
+_YEAR_RE = re.compile(r'\b(19|20)\d{2}\b')
+_SEASON_EPISODE_GENERIC_RE = re.compile(r'(?i)s0?(\d{1,3})[\s._\-]*e0?(\d{1,4})|\b(\d{1,3})[xX](\d{1,4})\b')
+
+
+def remove_year_season_episode(text: str) -> str:
+    """
+    Remove year and season/episode tokens from a filename/text to get a 'title-only' string.
+    This is conservative and intended for use in fuzzy matching and scoring.
+    """
+    if not text:
+        return ""
+    out = normalize_filename(text)
+    out = _YEAR_RE.sub(" ", out)
+    out = _SEASON_EPISODE_GENERIC_RE.sub(" ", out)
+    out = re.sub(r'[^a-z0-9\s]', ' ', out)
+    out = re.sub(r'\s+', ' ', out).strip()
+    return out
