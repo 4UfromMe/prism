@@ -889,7 +889,13 @@ class GlobalVariables:
                 params["endpoint"] = "boxoffice"
                 params["mediatype"] = "shows"
         return params
-
+        
+    def get_easynews_credentials(self):
+        """Get Easynews username and password from settings."""
+        username = self.get_setting("easynews.username") or ""
+        password = self.get_setting("easynews.password") or ""
+        return (username.strip(), password.strip()) if username and password else (None, None)
+        
     def _init_paths(self):
         self.ADDONS_PATH = tools.translate_path(os.path.join("special://home/", "addons/"))
         self.ADDON_PATH = tools.translate_path(os.path.join("special://home/", f"addons/{self.ADDON_ID.lower()}"))
