@@ -1817,13 +1817,14 @@
 					</constraints>
 					<control type="button" format="action"/>
 				</setting>
-				<setting id="easynews.premiumstatus" type="string" label="31088" help="">
-					<level>4</level>
+				<setting id="easynews.premiumstatus" type="string" label="30458" help="" parent="easynews.username">
+					<level>0</level>
 					<default/>
 					<constraints>
-						<enable>false</enable>
 						<allowempty>true</allowempty>
 					</constraints>
+					<enable>false</enable>
+					<dependencies>
 						<dependency type="visible">
 							<condition operator="is" setting="easynews.enabled">true</condition>
 						</dependency>
