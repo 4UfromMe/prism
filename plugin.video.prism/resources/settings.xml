@@ -1788,6 +1788,60 @@
 					<control type="toggle"/>
 				</setting>
 			</group>
+			<group id="9" label="31082">
+				<setting id="easynews.enabled" type="boolean" label="31083" help="">
+					<level>0</level>
+					<default>false</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="easynews.username" type="string" label="31084" help="">
+					<level>0</level>
+					<default/>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<enable>false</enable>
+					<dependencies>
+						<dependency type="visible">
+							<condition operator="is" setting="easynews.enabled">true</condition>
+						</dependency>
+					</dependencies>
+					<control type="edit" format="string">
+						<heading>31084</heading>
+					</control>
+				</setting>
+				<setting id="easynews.password" type="string" label="31085" help="" parent="easynews.username">
+					<level>0</level>
+					<default/>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<dependencies>
+						<dependency type="visible">
+							<condition operator="is" setting="easynews.enabled">true</condition>
+						</dependency>
+					</dependencies>
+					<control type="edit" format="string" mask="true">
+						<heading>31085</heading>
+					</control>
+				</setting>
+				<setting id="easynews.premiumstatus" type="string" label="30458" help="" parent="easynews.username">
+					<level>0</level>
+					<default/>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<enable>false</enable>
+					<dependencies>
+						<dependency type="visible">
+							<condition operator="is" setting="easynews.enabled">true</condition>
+						</dependency>
+					</dependencies>
+					<control type="edit" format="string">
+						<heading>30458</heading>
+					</control>
+				</setting>
+			</group>
 		</category>
 		<category id="providers" label="30136" help="">
 			<group id="1" label="30084">
