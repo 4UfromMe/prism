@@ -5625,5 +5625,5 @@ msgid "Easynews Password"
 msgstr "Easynews Password"
 
 msgctxt "#31087"
-msgid "Enter your Easynews username for authentication"
-msgstr "Enter your Easynews username for authentication"
+msgid "Test Easynews Authentication"
+msgstr "Test Easynews Authentication"
