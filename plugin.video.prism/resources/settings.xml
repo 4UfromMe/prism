@@ -1821,10 +1821,15 @@
 					<level>4</level>
 					<default/>
 					<constraints>
+						<enable>false</enable>
 						<allowempty>true</allowempty>
 					</constraints>
+						<dependency type="visible">
+							<condition operator="is" setting="easynews.enabled">true</condition>
+						</dependency>
+					</dependencies>
 					<control type="edit" format="string">
-						<heading/>
+						<heading>30458</heading>
 					</control>
 				</setting>
 			</group>
