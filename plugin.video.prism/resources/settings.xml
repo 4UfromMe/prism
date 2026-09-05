@@ -1769,6 +1769,7 @@
 			<group id="9" label="31082">
 				<setting id="easynews.enabled" type="boolean" label="31083" help="">
 					<level>0</level>
+					<default>false</default>
 					<control type="toggle"/>
 				</setting>
 				<setting id="easynews.username" type="string" label="31084" help="">
@@ -1777,9 +1778,11 @@
 					<constraints>
 						<allowempty>true</allowempty>
 					</constraints>
-					<enable>false</enable>
 					<dependencies>
 						<dependency type="visible">
+							<condition operator="is" setting="easynews.enabled">true</condition>
+						</dependency>
+						<dependency type="enable">
 							<condition operator="is" setting="easynews.enabled">true</condition>
 						</dependency>
 					</dependencies>
@@ -1797,9 +1800,13 @@
 						<dependency type="visible">
 							<condition operator="is" setting="easynews.enabled">true</condition>
 						</dependency>
+						<dependency type="enable">
+							<condition operator="is" setting="easynews.enabled">true</condition>
+						</dependency>
 					</dependencies>
-					<control type="edit" format="string" mask="true">
+					<control type="edit" format="string">
 						<heading>31085</heading>
+						<hidden>true</hidden>
 					</control>
 				</setting>
 				<setting id="easynews.premiumstatus" type="string" label="30458" help="" parent="easynews.username">
