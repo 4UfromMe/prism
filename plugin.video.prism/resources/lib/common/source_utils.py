@@ -6,7 +6,7 @@ from __future__ import annotations
 import contextlib
 import re
 import string
-from typing import Iterable, Iterator, List, Optional, Set, Tuple
+from typing import Iterable
 
 from resources.lib.modules.globals import g
 
@@ -30,59 +30,46 @@ _AMPERSAND = re.compile(r'&#038;|&amp;|&')
 _EPISODE_NUMBERS = re.compile(r'.*((?:s\d+ ?e\d+ )|(?:season ?\d+ ?(?:episode|ep) ?\d+)|(?: \d+ ?x ?\d+ ))')
 _ASCII_NON_PRINTABLE = re.compile(fr'[^{re.escape(string.printable)}]')
 
-# New: token and pattern helpers for three-pass episode matching
-# Basic stop words for episode-title token extraction (keeps this small but extendable)
-_EPISODE_TITLE_STOP_WORDS: Set[str] = {
-    "the", "a", "an", "and", "of", "in", "on", "for", "to", "with", "by", "from", "at", "is", "it", "this",
-    "that", "episode", "ep", "part", "series", "season", "full", "s", "x"
-}
-
-# Comprehensive S#E# token pattern (captures multiple common variants)
+# New patterns for three-pass matching and malformed detection
+# Allow season up to 3 digits and episode up to 4 digits
 _cloud_se_token_re = re.compile(
-    r"""
-    (?P<full>
-        (?:
-            # S01E02, S.01.E.02, S-01--E-02 etc.
-            (?P<form1>s[\s._\-]*0?(?P<s1>\d{1,3})[\s._\-]*e[\s._\-]*0?(?P<e1>\d{1,4}))
-        )
-        |
-        (?:
-            # 1x02, 01x02
-            (?P<form2>\b(?P<s2>\d{1,3})[xX][\s._\-]*0?(?P<e2>\d{1,4})\b)
-        )
-        |
-        (?:
-            # S1-E02 or S1--E02 variants
-            (?P<form3>s[\s._\-]*0?(?P<s3>\d{1,3})[\s._\-]*[-]{1,3}[\s._\-]*e[\s._\-]*0?(?P<e3>\d{1,4}))
-        )
-    )
-    """,
-    re.IGNORECASE | re.VERBOSE,
+    r'(?ix)(?:s0*(\d{1,3})[._\-\s]*e0*(\d{1,4})|(?<!\d)(\d{1,3})\s*[xX]\s*0*(\d{1,4})(?!\d))'
 )
+_cloud_bare_ep_re = re.compile(r'(?ix)(?:\bep[.\-]?\s*0*(\d{1,4})\b|\be0*(\d{1,4})\b|(?<!\d)(?:[._\-\s])0*(\d{1,4})(?:\b|$))')
+_malformed_ep_decl_re = re.compile(r'(?i)\bep0*\d+p\b')  # e.g., EP15p glued 'p' notation
 
-# Bare episode detection when season is missing (E480, EP-480, .480, -480)
-_cloud_bare_ep_re = re.compile(
-    r"""
-    (?:
-        (?<!\w)
-        (?:ep[\s._\-]*0?(?P<ep1>\d{1,4}))
-        |
-        (?:\b[eE][\s._\-]*0?(?P<ep2>\d{1,4})\b)
-        |
-        (?:\.(?P<ep3>0?\d{1,4})(?!\d))
-        |
-        (?:(?<=\b)\-(?P<ep4>\d{1,4})\b)
-    )
-    """,
-    re.VERBOSE,
-)
-
-# Malformed declarations, e.g. EP15p, EP15p1080 -> should be rejected unless token override
-_malformed_ep_decl_re = re.compile(r'\bep0?(?P<ep>\d{1,4})p\b', re.IGNORECASE)
-
-# Helper regex to find a plausible S# or SE token position quickly
-_any_se_token_re = re.compile(r'(s0?\d+[\s._\-]*e0?\d+|\b\d{1,3}[xX]\d{1,3}\b)', re.IGNORECASE)
-
+# Small stopword list for episode-title token pruning
+_STOPWORDS = {
+    "the",
+    "and",
+    "for",
+    "with",
+    "from",
+    "that",
+    "this",
+    "they",
+    "their",
+    "have",
+    "has",
+    "was",
+    "were",
+    "are",
+    "but",
+    "not",
+    "you",
+    "your",
+    "its",
+    "it's",
+    "a",
+    "an",
+    "in",
+    "on",
+    "at",
+    "to",
+    "of",
+    "is",
+    "it",
+}
 
 class CannotGenerateRegexFilterException(Exception):
     """Exception used when there is no valid input for generating the regex filters."""
@@ -504,270 +491,14 @@ def _release_contains_show_title(release_title: str, simple_info: dict) -> bool:
     return False
 
 
-def folder_title_queries(simple_info: dict) -> List[str]:
-    """
-    Generate cleaned title + aliases to be used for folder matching.
-    Returned values are cleaned (normalized) strings suitable for substring matching.
-    """
-    queries: List[str] = []
-    for title in _show_titles_from_simple_info(simple_info):
-        cleaned = clean_title_with_simple_info(title, simple_info)
-        if cleaned:
-            queries.append(cleaned)
-    return queries
-
-
-def folder_name_matches(folder_name: str, simple_info: dict) -> bool:
-    """
-    Substring match cleaned folder name against show title queries.
-    Returns True when any cleaned show title / alias appears in the folder name.
-    """
-    if not folder_name or not simple_info:
-        return False
-    folder_clean = clean_title(folder_name)
-    for q in folder_title_queries(simple_info):
-        if q and q in folder_clean:
-            return True
-    return False
-
-
-def episode_title_keep_tokens(episode_title: str) -> Set[str]:
-    """
-    Extract distinctive episode-title words:
-    - tokens length >= 3
-    - exclude common stopwords
-    - return lowercase tokens
-    """
-    if not episode_title:
-        return set()
-    cleaned = clean_title(episode_title)
-    tokens = [t for t in cleaned.split() if len(t) >= 3 and t not in _EPISODE_TITLE_STOP_WORDS]
-    return set(tokens)
-
-
-def _filename_tokens(path: str) -> List[str]:
-    """
-    Split a filename/path into normalized tokens using clean_title and whitespace split.
-    """
-    if not path:
-        return []
-    # We want to keep tokenization consistent with clean_title
-    cleaned = clean_title(path)
-    return [t for t in cleaned.split() if t]
-
-
-def episode_title_in_release(episode_title: str, filename: str) -> bool:
-    """
-    Check if episode-title tokens appear in filename. Uses conservative matching:
-    - requires at least one distinctive token (>=3 chars) to appear
-    - for short titles with many tokens, requires at least two tokens
-    """
-    if not episode_title or not filename:
-        return False
-    title_tokens = episode_title_keep_tokens(episode_title)
-    if not title_tokens:
-        return False
-    file_tokens = set(_filename_tokens(filename))
-    # If title has many tokens, require 2 matches; otherwise 1
-    required = 2 if len(title_tokens) >= 3 else 1
-    matches = sum(1 for t in title_tokens if t in file_tokens)
-    return matches >= required
-
-
-def _prefix_contains_show_title(release_title: str, token_start_index: int, simple_info: dict) -> bool:
-    """
-    Validate that a show title appears before the S#E# or bare episode placement.
-    This is a guard against ambiguous filenames where S#E# refers to something else.
-    """
-    if token_start_index is None or token_start_index < 0:
-        return False
-    prefix = release_title[:token_start_index]
-    # If any cleaned show title appears in prefix, pass
-    for title in _show_titles_from_simple_info(simple_info):
-        cleaned_title = clean_title_with_simple_info(title, simple_info)
-        if cleaned_title and cleaned_title in prefix:
-            return True
-    # Fallback: if prefix contains none alphanumeric characters (e.g. release group only), allow
-    # but be conservative: require at least something that looks like a title before token
-    # If prefix contains a reasonable word (length >=3), assume it might be title and allow.
-    words = [w for w in prefix.split() if len(w) >= 3]
-    return bool(words)
-
-
-def protected_placement_guard(release_title: str, simple_info: dict) -> bool:
-    """
-    Locate first S#E# token / bare episode / episode-title span and validate prefix.
-    Returns True if placement is acceptable (title exists before token or title tokens override).
-    """
-    if not release_title:
-        return False
-    r = clean_title(release_title)
-
-    # Check episode-title tokens first: if they appear anywhere, override placement concerns.
-    episode_title = simple_info.get("episode_title")
-    if episode_title and episode_title_in_release(episode_title, r):
-        return True
-
-    # Find first S#E# token
-    m = _cloud_se_token_re.search(r)
-    if m:
-        start = m.start()
-        return _prefix_contains_show_title(r, start, simple_info)
-
-    # If no S#E# token found, look for bare episode
-    m2 = _cloud_bare_ep_re.search(r)
-    if m2:
-        start = m2.start()
-        return _prefix_contains_show_title(r, start, simple_info)
-
-    # Nothing to validate, conservatively allow
-    return True
-
-
-def iter_season_episode_tokens(filename: str) -> Iterator[Tuple[int, int]]:
-    """
-    Yield (season, episode) pairs found in the filename using the comprehensive S/E token regex.
-    Returns integer pairs. Skips obviously malformed captures.
-    """
-    if not filename:
-        return
-    s = clean_title(filename)
-    for m in _cloud_se_token_re.finditer(s):
-        # Determine which groups matched
-        season = episode = None
-        if m.group("s1") and m.group("e1"):
-            season = m.group("s1")
-            episode = m.group("e1")
-        elif m.group("s2") and m.group("e2"):
-            season = m.group("s2")
-            episode = m.group("e2")
-        elif m.group("s3") and m.group("e3"):
-            season = m.group("s3")
-            episode = m.group("e3")
-        if season is None or episode is None:
-            continue
-        try:
-            yield (int(season), int(episode))
-        except ValueError:
-            continue
-
-
-def iter_bare_episode_numbers(filename: str) -> Iterator[int]:
-    """
-    Yield bare episode candidates (integers) when no explicit season token is found.
-    These are heuristics and should be used as fallback.
-    """
-    if not filename:
-        return
-    s = clean_title(filename)
-    for m in _cloud_bare_ep_re.finditer(s):
-        for gname in ("ep1", "ep2", "ep3", "ep4"):
-            if gname in m.groupdict() and m.group(gname):
-                try:
-                    num = int(m.group(gname))
-                    # Avoid treating years (>=1900 & <=2100) as episode numbers
-                    if 1900 <= num <= 2100:
-                        continue
-                    yield num
-                except ValueError:
-                    continue
-
-
-def cloud_episode_matches(release_title: str, simple_info: dict) -> bool:
-    """
-    Match requested episode against file tokens (S#E#, bare episode, episode-title tokens).
-    Follows the priority rules:
-      1) Episode-title tokens override mismatches (highest)
-      2) Exact S#E# token match with protected placement
-      3) Bare episode match with protected placement (lower confidence)
-      4) Absolute number fallback if provided in simple_info
-    Also rejects malformed declarations like EP15p unless episode-title tokens override.
-    """
-    if not release_title or not simple_info:
-        return False
-
-    r = clean_title(release_title)
-    requested_season = simple_info.get("season_number") or simple_info.get("season") or ""
-    requested_episode = simple_info.get("episode_number") or simple_info.get("episode") or ""
-    absolute_number = simple_info.get("absolute_number")
-
-    try:
-        req_season = int(str(requested_season)) if requested_season not in (None, "") else None
-    except (ValueError, TypeError):
-        req_season = None
-    try:
-        req_episode = int(str(requested_episode)) if requested_episode not in (None, "") else None
-    except (ValueError, TypeError):
-        req_episode = None
-
-    # Malformed declarations present? reject unless episode-title tokens override.
-    if _malformed_ep_decl_re.search(r):
-        episode_title = simple_info.get("episode_title")
-        if not (episode_title and episode_title_in_release(episode_title, r)):
-            return False
-
-    # Token override: if episode title tokens appear, accept immediately
-    episode_title = simple_info.get("episode_title")
-    if episode_title and episode_title_in_release(episode_title, r):
-        return True
-
-    # 1) Try explicit S#E# tokens
-    for s, e in iter_season_episode_tokens(r):
-        if req_season is not None and req_episode is not None:
-            if s == req_season and e == req_episode:
-                # ensure show title/prefix is valid
-                if _prefix_contains_show_title(r, r.find(str(s)), simple_info):
-                    return True
-                # allow if protected_placement_guard passes
-                if protected_placement_guard(r, simple_info):
-                    return True
-        else:
-            # If no requested season/episode provided but absolute_number is provided,
-            # attempt to map using absolute_number; otherwise, accept this if show title present
-            if absolute_number not in (None, ""):
-                # cannot easily map season/episode to absolute here; skip
-                pass
-            else:
-                # If only a single SE occurrence and show title appears before it, accept
-                if _prefix_contains_show_title(r, m.start() if (m := _cloud_se_token_re.search(r)) else 0, simple_info):
-                    return True
-
-    # 2) Bare episode numbers fallback
-    for num in iter_bare_episode_numbers(r):
-        if req_episode is not None and req_episode == num and protected_placement_guard(r, simple_info):
-            return True
-        if absolute_number not in (None, ""):
-            try:
-                abs_req = int(str(absolute_number))
-                if abs_req == num and protected_placement_guard(r, simple_info):
-                    return True
-            except (ValueError, TypeError):
-                pass
-
-    # 3) Absolute number in filename (padded variants)
-    if absolute_number not in (None, ""):
-        abs_num = str(absolute_number).lstrip("0") or "0"
-        padded = str(absolute_number).zfill(3)
-        haystack = f" {r} "
-        for needle in (
-            f" {padded} ",
-            f" {abs_num} ",
-            f"-{padded}-",
-            f"-{abs_num}-",
-            f" e{abs_num} ",
-            f" ep{abs_num} ",
-            f" episode {abs_num} ",
-        ):
-            if needle in haystack and protected_placement_guard(r, simple_info):
-                return True
-
-    return False
-
-
 def cloud_loose_episode_match(release_title: str, simple_info: dict) -> bool:
     """Loose episode matching for cloud files when release-group prefixes break anchored regex."""
     release_title = clean_title(release_title)
     if not _release_contains_show_title(release_title, simple_info):
+        # If show title is not present, still allow match if episode-title tokens match strongly
+        if simple_info.get("episode_title") and episode_title_in_release(simple_info["episode_title"], release_title):
+            return True
+        # otherwise require show title to be present for this loose match
         return False
 
     season = str(simple_info.get("season_number") or "")
@@ -815,22 +546,9 @@ def cloud_loose_episode_match(release_title: str, simple_info: dict) -> bool:
             if needle in haystack:
                 return True
 
-    # New: token-based override and protected placement guard integration
-    # If episode title tokens present, allow match (override)
-    episode_title = simple_info.get("episode_title")
-    if episode_title and episode_title_in_release(episode_title, release_title):
+    # Episode-title override (loose)
+    if simple_info.get("episode_title") and episode_title_in_release(simple_info["episode_title"], release_title):
         return True
-
-    # If explicit S/E tokens exist and protected placement guard passes, accept
-    if _cloud_se_token_re.search(release_title) and protected_placement_guard(release_title, simple_info):
-        for s, e in iter_season_episode_tokens(release_title):
-            if int(s) == int(season) and int(e) == int(episode):
-                return True
-
-    # Bare episode fallback
-    if any(int(n) == int(episode) for n in iter_bare_episode_numbers(release_title)):
-        if protected_placement_guard(release_title, simple_info):
-            return True
 
     return check_episode_title_match(
         [clean_title_with_simple_info(title, simple_info) for title in _show_titles_from_simple_info(simple_info)],
@@ -848,17 +566,19 @@ def cloud_episode_item_matches(
 ) -> bool:
     """Return True when a cloud file path matches the requested episode."""
     release_title = clean_title(release_title)
-    # Legacy regex check still has high priority
-    if episode_regex(release_title) or season_regex(release_title):
-        # ensure placement guard passes
-        if protected_placement_guard(release_title, simple_info):
-            return True
 
-    # Token and title-based matching
-    if cloud_episode_matches(release_title, simple_info):
-        return True
+    # If provider supplied anchored regex matches, require protected placement guard (unless episode-title overrides)
+    try:
+        if episode_regex(release_title) or season_regex(release_title):
+            # Episode-title override can accept even if placement guard fails
+            if simple_info.get("episode_title") and episode_title_in_release(simple_info["episode_title"], release_title):
+                return True
+            return protected_placement_guard(release_title, simple_info)
+    except Exception:
+        # In case provided regex callables misbehave, fallback to token based checks
+        pass
 
-    # Loose match if everything else failed
+    # Token and loose checks
     return cloud_loose_episode_match(release_title, simple_info)
 
 
@@ -1159,3 +879,466 @@ def get_filter_show_pack_fn(simple_info):
         return bool(re.match(regex_pattern, release_title))
 
     return filter_fn
+
+
+def is_file_ext_valid(file_name):
+    """
+    Checks if the video file type is supported by Kodi
+    :param file_name: name/path of file
+    :return: True if video file is expected to be supported else False
+    """
+    return file_name.endswith(g.common_video_extensions)
+
+
+def _full_meta_episode_regex(args):
+    """
+    Takes an episode items full meta and returns a regex object to use in title matching
+    :param args: Full meta of episode item
+    :return: compiled regex object
+    """
+    episode_info = args["info"]
+    show_title = clean_title(episode_info["tvshowtitle"])
+    country = episode_info.get("country", "")
+    if isinstance(country, (list, set)):
+        country = '|'.join(country)
+    country = country.lower()
+    year = episode_info.get("year", "")
+    episode_title = clean_title(episode_info.get("title", ""))
+    season = str(episode_info.get("season", ""))
+    episode = str(episode_info.get("episode", ""))
+
+    if episode_title == show_title or len(re.findall(r"^\d+$", episode_title)) > 0:
+        episode_title = None
+
+    reg_string = (
+        r"(?#SHOW TITLE)(?:{show_title})"
+        r"? ?"
+        r"(?#COUNTRY)(?:{country})"
+        r"? ?"
+        r"(?#YEAR)(?:{year})"
+        r"? ?"
+        r"(?:(?:[s[]?)0?"
+        r"(?#SEASON){season}"
+        r"[x .e]|(?:season 0?"
+        r"(?#SEASON){season} "
+        r"(?:episode )|(?: ep ?)))(?:\d?\d?e)?0?"
+        r"(?#EPISODE){episode}"
+        r"(?:e\d\d)?\]? "
+    )
+
+    reg_string = reg_string.format(show_title=show_title, country=country, year=year, season=season, episode=episode)
+
+    if episode_title:
+        reg_string += f"|{episode_title}"
+
+    reg_string = reg_string.replace("*", ".")
+
+    return re.compile(reg_string)
+
+
+def get_best_episode_match(dict_key, dictionary_list, item_information):
+    """
+    Attempts to identify the best matching file/s for a given item and list of source files
+    :param dict_key: internal key of dictionary in dictionary list to run checks against
+    :param dictionary_list: list of dictionaries containing source title
+    :param item_information: full meta of episode object
+    :return: dictionaries that best matched requested episode
+    """
+    regex = _full_meta_episode_regex(item_information)
+    files = []
+
+    for i in dictionary_list:
+        i.update({"regex_matches": regex.findall(clean_title(i[dict_key].split("/")[-1].replace("&", " ").lower()))})
+        files.append(i)
+    files = [i for i in files if len(i["regex_matches"]) > 0]
+
+    if not files:
+        return None
+
+    files = sorted(files, key=lambda x: len(" ".join(x["regex_matches"])), reverse=True)
+
+    return files[0]
+
+
+def clear_extras_by_string(args, extra_string, folder_details):
+    """
+    Strips source files that are identified to contain files related to show/movie extras
+    :param args: full metadata of requested playback item
+    :param extra_string: string used to identify bad source files
+    :param folder_details: normalised list of source files
+    :return: cleaned list of folder items
+    """
+    keys_to_confirm_against = ["title", "tvshowtitle"]
+    if int(args["info"].get("season", 1)) == 0:
+        return folder_details
+    for key in keys_to_confirm_against:
+        if extra_string in args["info"].get(key, ""):
+            return []
+
+    folder_details = [
+        i for i in folder_details if extra_string not in clean_title(i["path"].split("/")[-1].replace("&", " ").lower())
+    ]
+    folder_details = [
+        i
+        for i in folder_details
+        if not any(True for folder in i["path"].split("/") if extra_string.lower() == folder.lower())
+    ]
+
+    return [i for i in folder_details if extra_string not in i["path"]]
+
+
+def filter_files_for_resolving(folder_details, args):
+    """
+    Ease of use method to filter common strings with clear_extras_by_string
+    :param folder_details: normalised list of source files
+    :param args: full meta of requested playback item
+    :return: cleaned list of folder items
+    """
+    folder_details = clear_extras_by_string(args, "extras", folder_details)
+    folder_details = clear_extras_by_string(args, "specials", folder_details)
+    folder_details = clear_extras_by_string(args, "featurettes", folder_details)
+    folder_details = clear_extras_by_string(args, "deleted scenes", folder_details)
+    folder_details = clear_extras_by_string(args, "sample", folder_details)
+    return folder_details
+
+
+def de_string_size(size):
+    """
+    Attempts to take a stringed size eg(1GB) and return a integer size in MB
+    :param size: identified size
+    :type size: str
+    :return: size in MB if string can be converted else None
+    :rtype int|None:
+    """
+    if "GB" in size:
+        size = float(size.replace("GB", ""))
+        return int(size * 1024)
+    if "MB" in size:
+        size = int(size.replace("MB", "").replace(" ", "").split(".")[0])
+        return size
+    if "KB" in size:
+        size = float(size.replace("KB", ""))
+        return int(size * 0.001)
+    if "MiB" in size:
+        size = int(size.replace("MiB", "").replace(" ", "").split(".")[0])
+        return size
+    if "GiB" in size:
+        size = float(size.replace("GiB", ""))
+        return int(size * 1024)
+    if "KiB" in size:
+        size = float(size.replace("KiB", ""))
+        return int(size * 0.001024)
+
+
+def get_accepted_resolution_set():
+    """
+    Fetches set of accepted resolutions per settings
+    :return: set of resolutions
+    :rtype set
+    """
+    resolutions = ["4K", "1080p", "720p", "SD"]
+    max_res = g.get_int_setting("general.maxResolution")
+    min_res = g.get_int_setting("general.minResolution")
+
+    return set(resolutions[max_res : min_res + 1])
+
+
+# -----------------------------
+# New token and pattern helpers
+# -----------------------------
+def _filename_tokens(text: str) -> list[str]:
+    """
+    Split filename/path into lowercase alpha-numeric tokens.
+    Consistent with other tokenizers in the codebase.
+    """
+    if text is None:
+        return []
+    cleaned = clean_title(text)
+    return [t for t in re.findall(r"[a-z0-9]+", cleaned)]
+
+
+def episode_title_keep_tokens(episode_title: str) -> set[str]:
+    """
+    Extract distinctive episode-title words: lowercased tokens, >=3 chars, drop stopwords.
+    Returns a set (deduped) suitable for order-independent matching.
+    """
+    if not episode_title:
+        return set()
+    tokens = set(_filename_tokens(episode_title))
+    tokens = {t for t in tokens if len(t) >= 3 and t not in _STOPWORDS}
+    return tokens
+
+
+def episode_title_in_release(episode_title: str, release_filename: str) -> bool:
+    """
+    Check if episode-title tokens appear anywhere in filename/path in any order.
+    - For short title (<=2 tokens) require exact presence of all tokens.
+    - For longer titles require at least 2 tokens or 50% coverage (whichever is larger).
+    """
+    if not episode_title or not release_filename:
+        return False
+
+    query_tokens = episode_title_keep_tokens(episode_title)
+    if not query_tokens:
+        return False
+
+    candidate_tokens = set(_filename_tokens(release_filename))
+
+    matched = query_tokens & candidate_tokens
+    if not matched:
+        return False
+
+    if len(query_tokens) <= 2:
+        return matched == query_tokens
+    threshold = max(2, int(len(query_tokens) * 0.5))
+    return len(matched) >= threshold
+
+
+def folder_title_queries(simple_info: dict) -> list[str]:
+    """
+    Generate cleaned title + aliases for folder filtering.
+    Returns list of normalized titles to compare against folder names.
+    """
+    if not isinstance(simple_info, dict):
+        return []
+    titles = _show_titles_from_simple_info(simple_info)
+    cleaned = []
+    for t in titles:
+        ct = clean_title_with_simple_info(t, simple_info)
+        if ct:
+            cleaned.append(ct)
+    return cleaned
+
+
+def folder_name_matches(folder_name: str, simple_info: dict) -> bool:
+    """
+    Substring / token match of cleaned folder name against show title queries.
+    Matching is order-independent and tolerant:
+      - Accept if cleaned folder contains the cleaned show title substring
+      - OR if token intersection >= 2 OR >= 60% coverage
+    """
+    if not folder_name:
+        return False
+    if not isinstance(simple_info, dict):
+        return True
+
+    folder_clean = clean_title(folder_name)
+    queries = folder_title_queries(simple_info)
+    if not queries:
+        # no show title to compare against: do not block (be permissive)
+        return True
+
+    folder_tokens = set(_filename_tokens(folder_clean))
+    for q in queries:
+        if not q:
+            continue
+        q_clean = clean_title(q)
+        if not q_clean:
+            continue
+        # substring shortcut
+        if q_clean in folder_clean:
+            return True
+        q_tokens = set(_filename_tokens(q_clean))
+        if not q_tokens:
+            continue
+        matched = q_tokens & folder_tokens
+        if len(matched) >= 2:
+            return True
+        if len(matched) / len(q_tokens) >= 0.6:
+            return True
+    return False
+
+
+def _prefix_contains_show_title(candidate: str, simple_info: dict, token_start_index: int) -> bool:
+    """
+    Returns True if any show title candidate appears in candidate text
+    at an index earlier than token_start_index (i.e. before the S/E or bare-EP).
+    If no show title is present at all, return False.
+    """
+    if not candidate or not isinstance(simple_info, dict):
+        return False
+    candidate_clean = clean_title(candidate)
+    earliest_title_index = None
+    for title in _show_titles_from_simple_info(simple_info):
+        for candidate_variant in (clean_title_with_simple_info(title, simple_info), clean_title(title)):
+            if not candidate_variant:
+                continue
+            idx = candidate_clean.find(candidate_variant)
+            if idx >= 0:
+                if earliest_title_index is None or idx < earliest_title_index:
+                    earliest_title_index = idx
+    if earliest_title_index is None:
+        return False
+    return earliest_title_index < token_start_index
+
+
+def protected_placement_guard(candidate: str, simple_info: dict) -> bool:
+    """
+    Locate first S#E token / bare episode / episode-title span and validate that, if a show title exists
+    in the filename/folder, it appears before that token. This reduces false positives where numbers
+    belong to unrelated content.
+
+    Behaviour:
+    - If episode-title tokens are strongly present (episode_title_in_release), returns True (override).
+    - If no S/E or bare-EP token found, returns True.
+    - If show title is not present in the candidate at all, return True (per current requirement).
+    - If show title exists and appears before the first token -> True; if show title appears after token -> False.
+    """
+    if not candidate or not isinstance(simple_info, dict):
+        return True
+
+    cleaned = clean_title(candidate)
+
+    # Episode-title override
+    if simple_info.get("episode_title") and episode_title_in_release(simple_info["episode_title"], cleaned):
+        return True
+
+    # find first SE token
+    se_match = None
+    for m in _cloud_se_token_re.finditer(candidate):
+        se_match = m
+        break
+    bare_match = None
+    if se_match is None:
+        for m in _cloud_bare_ep_re.finditer(candidate):
+            bare_match = m
+            break
+
+    if se_match is None and bare_match is None:
+        # No tokens to validate placement for; be permissive
+        return True
+
+    # Determine token index (use start of matched span in cleaned string)
+    token_span_index = None
+    # To get an index in cleaned, search for the matched text's cleaned variant
+    if se_match:
+        raw_token = se_match.group(0)
+        token_index = clean_title(candidate).find(clean_title(raw_token))
+        token_span_index = token_index if token_index >= 0 else None
+    elif bare_match:
+        raw_token = bare_match.group(0)
+        token_index = clean_title(candidate).find(clean_title(raw_token))
+        token_span_index = token_index if token_index >= 0 else None
+
+    if token_span_index is None:
+        # If we couldn't compute a reliable index, be permissive
+        return True
+
+    # If show title present and appears after token -> reject
+    if _release_contains_show_title(cleaned, simple_info):
+        if not _prefix_contains_show_title(candidate, simple_info, token_span_index):
+            return False
+
+    # Otherwise accept
+    return True
+
+
+def iter_season_episode_tokens(text: str) -> Iterable[tuple]:
+    """
+    Yield (season, episode) pairs found in the provided text using generous SE patterns.
+    Season up to 3 digits, episode up to 4 digits.
+    """
+    if not text:
+        return
+    for m in _cloud_se_token_re.finditer(text):
+        g1, g2, g3, g4 = m.groups() + (None,) * (4 - len(m.groups()))
+        if g1 and g2:
+            yield g1, g2
+        elif g3 and g4:
+            yield g3, g4
+
+
+def iter_bare_episode_numbers(text: str) -> Iterable[str]:
+    """
+    Yield bare episode candidates found in text (E480, EP480, .480 etc).
+    Filters out obvious year matches (1900-2100).
+    """
+    if not text:
+        return
+    for m in _cloud_bare_ep_re.finditer(text):
+        groups = m.groups() or ()
+        for g in groups:
+            if not g:
+                continue
+            try:
+                n = int(g)
+            except Exception:
+                continue
+            # filter likely years
+            if 1900 <= n <= 2100:
+                continue
+            yield str(n)
+
+
+def cloud_episode_matches(release_title: str, simple_info: dict) -> bool:
+    """
+    Token-based matching to decide if a file likely matches requested episode.
+    Matches:
+      - episode-title tokens (override)
+      - explicit SE tokens (require protected placement unless override)
+      - bare episode numbers (require protected placement unless override)
+      - absolute numbers (padded variants)
+    """
+    if not isinstance(simple_info, dict):
+        return False
+
+    cleaned = clean_title(release_title)
+
+    # Episode-title override (highest priority)
+    if simple_info.get("episode_title") and episode_title_in_release(simple_info["episode_title"], cleaned):
+        return True
+
+    # Requested coords
+    season_req = simple_info.get("season_number") or simple_info.get("season")
+    episode_req = simple_info.get("episode_number") or simple_info.get("episode")
+    try:
+        season_req_i = int(str(season_req)) if season_req not in (None, "") else None
+    except Exception:
+        season_req_i = None
+    try:
+        episode_req_i = int(str(episode_req)) if episode_req not in (None, "") else None
+    except Exception:
+        episode_req_i = None
+
+    # Explicit S#E# tokens
+    if season_req_i is not None and episode_req_i is not None:
+        for s, e in iter_season_episode_tokens(release_title):
+            try:
+                if int(s) == season_req_i and int(e) == episode_req_i:
+                    if protected_placement_guard(release_title, simple_info):
+                        return True
+            except Exception:
+                continue
+
+    # Bare episode numbers (fallback)
+    if episode_req_i is not None:
+        for n in iter_bare_episode_numbers(release_title):
+            try:
+                if int(n) == episode_req_i:
+                    if protected_placement_guard(release_title, simple_info):
+                        return True
+            except Exception:
+                continue
+
+    # Absolute number fallback
+    absolute_number = simple_info.get("absolute_number")
+    if absolute_number not in (None, ""):
+        try:
+            abs_req = int(str(absolute_number))
+            padded = str(abs_req).zfill(3)
+            haystack = f" {cleaned} "
+            for needle in (
+                f" {padded} ",
+                f" {abs_req} ",
+                f"-{padded}-",
+                f"-{abs_req}-",
+                f" e{abs_req} ",
+                f" ep{abs_req} ",
+                f" episode {abs_req} ",
+            ):
+                if needle in haystack and protected_placement_guard(release_title, simple_info):
+                    return True
+        except Exception:
+            pass
+
+    return False
