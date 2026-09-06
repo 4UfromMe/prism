@@ -14,8 +14,6 @@ from urllib import parse
 import xbmc
 import xbmcvfs
 
-from resources.lib.common import source_utils
-from resources.lib.modules.globals import g
 
 youtube_url = "plugin://plugin.video.youtube/play/?video_id={}"
 
@@ -690,6 +688,9 @@ def normalize_filename(text: str) -> str:
     """
     if text is None:
         return ""
+    # import lazily to avoid circular import during module init
+    from resources.lib.modules.globals import g
+    from resources.lib.common import source_utils
     try:
         text = g.deaccent_string(text)
     except Exception:
@@ -704,6 +705,7 @@ def split_filename_tokens(text: str) -> list[str]:
     Tokenize a filename/path into lowercase alphanumeric word tokens.
     Uses the canonical source_utils tokenizer.
     """
+    from resources.lib.common import source_utils
     return source_utils._filename_tokens(text)
 
 
@@ -744,8 +746,10 @@ def remove_year_season_episode(text: str) -> str:
     # remove 4-digit years in range 1900-2100
     s = re.sub(r"\b(19|20)\d{2}\b", " ", s)
     # remove SxxExxx and NxM tokens (generous digit support)
+    from resources.lib.common import source_utils
     s = source_utils._cloud_se_token_re.sub(" ", s)
     s = source_utils._cloud_bare_ep_re.sub(" ", s)
+
     # collapse whitespace
     s = re.sub(r"\s+", " ", s).strip()
     return s
