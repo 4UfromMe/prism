@@ -35,7 +35,7 @@ from resources.lib.modules.cloud_scrapers import AllDebridCloudScraper
 from resources.lib.modules.cloud_scrapers import PremiumizeCloudScraper
 from resources.lib.modules.cloud_scrapers import RealDebridCloudScraper
 from resources.lib.modules.cloud_scrapers import OffCloudCloudScraper
-from resources.lib.modules.modules import ThreadPool as TP  # kept for potential compatibility
+from resources.lib.common.thread_pool import ThreadPool as TP  # kept for potential compatibility
 from resources.lib.modules.cloud_scrapers import TorBoxCloudScraper
 from resources.lib.modules.local_scraper import LocalFileScraper
 from resources.lib.modules.local_scraper import local_scraping_enabled
