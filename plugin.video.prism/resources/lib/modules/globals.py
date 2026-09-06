@@ -777,6 +777,9 @@ class GlobalVariables:
         if argv is None:
             return
 
+        # lazy import tools to avoid circular imports at module import time
+        from resources.lib.common import tools
+
         self.URL = parse.urlparse(argv[0])
         try:
             self.PLUGIN_HANDLE = int(argv[1])
@@ -887,6 +890,9 @@ class GlobalVariables:
         return (username.strip(), password.strip()) if username and password else (None, None)
         
     def _init_paths(self):
+        # lazy import tools to avoid circular imports at module import time
+        from resources.lib.common import tools
+
         self.ADDONS_PATH = tools.translate_path(os.path.join("special://home/", "addons/"))
         self.ADDON_PATH = tools.translate_path(os.path.join("special://home/", f"addons/{self.ADDON_ID.lower()}"))
         self.ADDON_DATA_PATH = tools.translate_path(self.ADDON.getAddonInfo("path"))  # Addon folder
@@ -1079,4 +1085,18 @@ class GlobalVariables:
         """
         Get a runtime setting as a float value
 
-Due to message length limits, continuing the file in the next call.
+        :param setting_id: The name of the setting
+        :type setting_id: str
+        :param default_value: Default to return if not set
+        :type default_value: float
+        :return: Float value or default_value
+        :rtype: float|None
+        """
+        val = self.get_runtime_setting(setting_id, default_value)
+        try:
+            return float(val)
+        except (TypeError, ValueError):
+            return default_value
+
+# End of file (GlobalVariables). Note: the module relies on a module-global instance `g` being created
+# by the package's entry point after this class definition (common pattern in this codebase).
