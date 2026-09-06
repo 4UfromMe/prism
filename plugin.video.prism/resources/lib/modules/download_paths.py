@@ -9,7 +9,8 @@ from resources.lib.common import source_utils
 from resources.lib.modules.globals import g
 
 _INVALID_PATH_CHARS = re.compile(r'[<>:"/\\|?*]')
-_SEASON_EPISODE_RE = re.compile(r'(?i)s(\d{1,2})e(\d{1,2})')
+# Updated to support season up to 3 digits and episode up to 4 digits
+_SEASON_EPISODE_RE = re.compile(r'(?i)s0*(\d{1,3})e0*(\d{1,4})')
 
 
 def sanitize_path_component(name):
