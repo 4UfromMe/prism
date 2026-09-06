@@ -7,10 +7,11 @@ from resources.lib.common import tools
 from resources.lib.modules.cloud_scrapers import CloudScraper
 from resources.lib.modules.globals import g
 
-_SEASON_EPISODE_RE = re.compile(r'(?i)s(\d{1,2})e(\d{1,2})')
-_SEASON_EPISODE_X_RE = re.compile(r'(?i)(?:^|[.\s_-])(\d{1,2})x(\d{1,2})(?:[.\s_-]|$)')
-_SEASON_FOLDER_RE = re.compile(r'(?i)^season\s*0*(\d+)$')
-_TITLE_TOKEN_RE = re.compile(r'[a-z0-9]+')
+# Updated to support season up to 3 digits and episode up to 4 digits
+_SEASON_EPISODE_RE = re.compile(r'(?i)s0*(\d{1,3})e0*(\d{1,4})')
+_SEASON_EPISODE_X_RE = re.compile(r'(?i)(?:^|[.\s_\-])0*(\d{1,3})[xX]0*(\d{1,4})(?:[.\s_\-]|$)')
+_SEASON_FOLDER_RE = re.compile(r'(?i)^season\s*0*(\d{1,3})$')
+_TITLE_TOKEN_RE = re.compile(r'[a-z0-9]+')  # token extractor (no digit-length limits)
 
 
 def _join_vfs_path(base, name):
@@ -176,14 +177,23 @@ class LocalFileScraper(CloudScraper):
     @staticmethod
     def _parse_episode_numbers(text):
         """
-        Legacy parsing kept for compatibility. Prefer new token iterators in source_utils.
+        Updated parsing to support season up to 3 digits and episode up to 4 digits.
+        Prefers SxxExxxx then NxM style.
         """
+        if not text:
+            return None
         match = _SEASON_EPISODE_RE.search(text)
         if match:
-            return int(match.group(1)), int(match.group(2))
+            try:
+                return int(match.group(1)), int(match.group(2))
+            except Exception:
+                return None
         match = _SEASON_EPISODE_X_RE.search(text)
         if match:
-            return int(match.group(1)), int(match.group(2))
+            try:
+                return int(match.group(1)), int(match.group(2))
+            except Exception:
+                return None
         return None
 
     def _local_search_text(self, item):
@@ -199,8 +209,8 @@ class LocalFileScraper(CloudScraper):
     def _title_in_local_item(self, item, titles):
         haystack = self._local_search_text(item)
         for title in titles:
-            clean_title = source_utils.clean_title(title)
-            if clean_title and clean_title in haystack:
+            clean_title_val = source_utils.clean_title(title)
+            if clean_title_val and clean_title_val in haystack:
                 return True
 
         show_folder = self._show_folder_from_path(item.get('path', ''))
@@ -261,7 +271,7 @@ class LocalFileScraper(CloudScraper):
         """
         Three-pass episode matching:
          1) Folder gate: if folder exists and does not match show title -> reject
-         2) Token matches: explicit S#E#, bare episode numbers, protected placement guard
+         2) Token matches: explicit S#E#, bare episodes, protected placement guard
          3) Episode-title tokens override: if present, accept even if other checks failed
         """
         target = self._target_episode_numbers()
@@ -284,25 +294,31 @@ class LocalFileScraper(CloudScraper):
 
         # Reject malformed EP declarations like EP15p unless episode-title override exists
         if source_utils._malformed_ep_decl_re.search(cleaned):
-            ep_title = self._episode_title_candidates()
-            if not any(source_utils.episode_title_in_release(t, cleaned) for t in ep_title):
+            ep_title_candidates = self._episode_title_candidates()
+            if not any(source_utils.episode_title_in_release(t, cleaned) for t in ep_title_candidates):
                 return False
 
         # Pass 2: explicit S#E# tokens
         # Check both filename and full path
         for token_source in (filename, path, combined):
             for s, e in source_utils.iter_season_episode_tokens(token_source):
-                if int(s) == req_season and int(e) == req_episode:
-                    # validate placement/prefix
-                    if source_utils.protected_placement_guard(token_source, self.simple_info):
-                        return True
+                try:
+                    if int(s) == req_season and int(e) == req_episode:
+                        # validate placement/prefix
+                        if source_utils.protected_placement_guard(token_source, self.simple_info):
+                            return True
+                except Exception:
+                    continue
 
         # Pass 2b: bare episode numbers (fallback)
         for token_source in (filename, path, combined):
             for num in source_utils.iter_bare_episode_numbers(token_source):
-                if int(num) == req_episode:
-                    if source_utils.protected_placement_guard(token_source, self.simple_info):
-                        return True
+                try:
+                    if int(num) == req_episode:
+                        if source_utils.protected_placement_guard(token_source, self.simple_info):
+                            return True
+                except Exception:
+                    continue
 
         # Pass 3: episode-title token override
         for candidate in self._episode_title_candidates():
@@ -340,8 +356,8 @@ class LocalFileScraper(CloudScraper):
         year = (self.simple_info.get('year') or '').strip()
 
         for title in titles:
-            clean_title = source_utils.clean_title(title)
-            if not clean_title or clean_title not in haystack:
+            clean_title_val = source_utils.clean_title(title)
+            if not clean_title_val or clean_title_val not in haystack:
                 continue
             if year and year not in haystack:
                 continue
