@@ -27,7 +27,6 @@ from resources.lib.debrid import external_cache
 from resources.lib.debrid import premiumize
 from resources.lib.debrid import real_debrid
 from resources.lib.debrid import offcloud
-from resources.lib.debrid import torbox
 from resources.lib.gui.windows.get_sources_window import GetSourcesWindow
 from resources.lib.gui.windows.manual_caching import ManualCacheWindow
 from resources.lib.modules import monkey_requests
