@@ -1,6 +1,5 @@
 import os
 import re
-from urllib import parse
 from typing import Dict, List, Optional, Tuple
 
 import xbmcvfs
@@ -303,7 +302,7 @@ def validate_episode_in_folder(item_information: dict, path: str, filename: Opti
 
     simple_info = {
         'show_title': info.get('tvshowtitle') or info.get('title'),
-        'show_aliases': info.get('aliases') or [],
+        'show_aliases': list(info.get('aliases') or []),
         'season_number': info.get('season') or info.get('season_number'),
         'episode_number': info.get('episode') or info.get('episode_number'),
         'absolute_number': info.get('absolute_number'),
@@ -367,7 +366,6 @@ def validate_episode_in_folder(item_information: dict, path: str, filename: Opti
     if abs_num not in (None, ''):
         try:
             abs_req = int(str(abs_num))
-            # look for padded/variants in cleaned string
             padded = str(abs_req).zfill(3)
             haystack = f" {cleaned} "
             for needle in (
