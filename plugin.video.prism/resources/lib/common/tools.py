@@ -15,8 +15,10 @@ import xbmc
 import xbmcvfs
 
 from resources.lib.common import source_utils
+from resources.lib.modules.globals import g
 
 youtube_url = "plugin://plugin.video.youtube/play/?video_id={}"
+
 DIGIT_REGEX = re.compile(r"\d")
 SORT_TOKENS = [
     "a ",
@@ -268,7 +270,6 @@ def _resolve_episode_show_id(db, action_args, episode_id):
     )
     if row and row.get("simkl_show_id") is not None:
         return int(row["simkl_show_id"])
-
     return _show_id_from_video_playlist()
 
 
@@ -679,6 +680,77 @@ def md5_hash(value):
     return hashlib.md5(str(value).encode("utf-8")).hexdigest()
 
 
+# -----------------------------
+# New helpers/Wrappers (tokenization & normalization)
+# -----------------------------
+def normalize_filename(text: str) -> str:
+    """
+    Consistent filename normalization used by matching functions.
+    Performs deaccenting, strips non-ascii/unprintable, then applies source_utils.clean_title.
+    """
+    if text is None:
+        return ""
+    try:
+        text = g.deaccent_string(text)
+    except Exception:
+        # fallback if g.deaccent_string not available/raises
+        text = str(text)
+    text = source_utils.strip_non_ascii_and_unprintable(text)
+    return source_utils.clean_title(text)
+
+
+def split_filename_tokens(text: str) -> list[str]:
+    """
+    Tokenize a filename/path into lowercase alphanumeric word tokens.
+    Uses the canonical source_utils tokenizer.
+    """
+    return source_utils._filename_tokens(text)
+
+
+def folder_title_queries(simple_info: dict) -> list[str]:
+    """
+    Wrapper that ensures show title/aliases are normalized consistently before folder matching.
+    Calls source_utils.folder_title_queries but guarantees inputs are cleaned via normalize_filename where needed.
+    """
+    if not isinstance(simple_info, dict):
+        return []
+    # Ensure alias/title slots are cleaned (we do not mutate the original dict)
+    si = dict(simple_info)
+    # Normalize show_title and aliases for consistency (if present)
+    title = si.get("show_title")
+    if title:
+        si["show_title"] = normalize_filename(title)
+    aliases = si.get("show_aliases")
+    if aliases and isinstance(aliases, (list, tuple)):
+        si["show_aliases"] = [normalize_filename(a) for a in aliases if a]
+    return source_utils.folder_title_queries(si)
+
+
+def episode_title_keep_tokens_wrapper(episode_title: str) -> set[str]:
+    """
+    Thin wrapper to expose source_utils.episode_title_keep_tokens via tools namespace.
+    """
+    return source_utils.episode_title_keep_tokens(episode_title)
+
+
+def remove_year_season_episode(text: str) -> str:
+    """
+    Remove common year, season, and episode markers from text.
+    Useful to produce a 'clean' title-only variant for fuzzy matching.
+    """
+    if not text:
+        return ""
+    s = normalize_filename(text)
+    # remove 4-digit years in range 1900-2100
+    s = re.sub(r"\b(19|20)\d{2}\b", " ", s)
+    # remove SxxExxx and NxM tokens (generous digit support)
+    s = source_utils._cloud_se_token_re.sub(" ", s)
+    s = source_utils._cloud_bare_ep_re.sub(" ", s)
+    # collapse whitespace
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
 # Re-added for provider backwards compatibility support
 def log(msg, level):
     """
@@ -690,9 +762,9 @@ def log(msg, level):
     :return: None
     :rtype: None
     """
-    from resources.lib.modules.globals import g
+    from resources.lib.modules.globals import g as _g
 
-    g.log(msg, level)
+    _g.log(msg, level)
 
 
 def run_threaded(target_func, *args, **kwargs):
@@ -976,54 +1048,3 @@ class FixedSortPositionObject:
 
     def __neg__(self):
         return self
-
-
-# -----------------------------------------------------------------------------
-# New helpers for filename/folder normalization and token extraction
-# -----------------------------------------------------------------------------
-def folder_title_queries(simple_info: dict) -> list:
-    """
-    Wrapper to generate cleaned title + aliases to be used for folder matching.
-    Delegates to source_utils to ensure a single canonical implementation.
-    """
-    if not isinstance(simple_info, dict):
-        return []
-    return source_utils.folder_title_queries(simple_info)
-
-
-def normalize_filename(filename: str) -> str:
-    """
-    Standardize filename cleaning (accent-fold, remove non-ASCII, lowercase, strip separators).
-    Uses source_utils.clean_title under the hood for consistent normalization.
-    """
-    if filename is None:
-        return ""
-    # Keep consistent with the main normalization used across the codebase
-    return source_utils.clean_title(str(filename))
-
-
-def split_filename_tokens(filename: str) -> list:
-    """
-    Tokenize a filename/path into normalized tokens suitable for matching and scoring.
-    Delegates to source_utils._filename_tokens for consistent behaviour.
-    """
-    return source_utils._filename_tokens(filename or "")
-
-
-_YEAR_RE = re.compile(r'\b(19|20)\d{2}\b')
-_SEASON_EPISODE_GENERIC_RE = re.compile(r'(?i)s0?(\d{1,3})[\s._\-]*e0?(\d{1,4})|\b(\d{1,3})[xX](\d{1,4})\b')
-
-
-def remove_year_season_episode(text: str) -> str:
-    """
-    Remove year and season/episode tokens from a filename/text to get a 'title-only' string.
-    This is conservative and intended for use in fuzzy matching and scoring.
-    """
-    if not text:
-        return ""
-    out = normalize_filename(text)
-    out = _YEAR_RE.sub(" ", out)
-    out = _SEASON_EPISODE_GENERIC_RE.sub(" ", out)
-    out = re.sub(r'[^a-z0-9\s]', ' ', out)
-    out = re.sub(r'\s+', ' ', out).strip()
-    return out
