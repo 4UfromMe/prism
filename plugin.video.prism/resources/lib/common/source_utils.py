@@ -8,7 +8,7 @@ import re
 import string
 from typing import Iterable
 
-from resources.lib.modules.globals import g
+#from resources.lib.modules.globals import g
 
 BROWSER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/42.0.2311.135 Safari/537."
@@ -326,6 +326,8 @@ def clean_title(title, broken=None):
     :param broken: set to 1 to remove apostophes, 2 to replace with spaces
     :return: cleaned title
     """
+    # Import g lazily to avoid circular import at module import time.
+    from resources.lib.modules.globals import g
     title = g.deaccent_string(title)
     title = strip_non_ascii_and_unprintable(title)
     title = title.lower()
@@ -887,6 +889,7 @@ def is_file_ext_valid(file_name):
     :param file_name: name/path of file
     :return: True if video file is expected to be supported else False
     """
+    from resources.lib.modules.globals import g
     return file_name.endswith(g.common_video_extensions)
 
 
@@ -1037,8 +1040,11 @@ def get_accepted_resolution_set():
     :rtype set
     """
     resolutions = ["4K", "1080p", "720p", "SD"]
+    # Lazy import of g to avoid circular-import during module init.
+    from resources.lib.modules.globals import g
     max_res = g.get_int_setting("general.maxResolution")
     min_res = g.get_int_setting("general.minResolution")
+ 
 
     return set(resolutions[max_res : min_res + 1])
 
